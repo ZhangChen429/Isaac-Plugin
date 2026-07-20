@@ -1,0 +1,15 @@
+[package]
+version = "0.1.0"
+title = "Hello Isaac UI"
+description = "Small Isaac Sim UI extension with a menu item and a window."
+category = "Example"
+keywords = ["isaac", "ui", "extension"]
+
+[dependencies]
+"omni.kit.actions.core" = {}
+"omni.kit.menu.utils" = {}
+"omni.ui" = {}
+"omni.usd" = {}
+
+[[python.module]]
+name = "hello.isaac.ui"

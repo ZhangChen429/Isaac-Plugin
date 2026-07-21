@@ -1,10 +1,11 @@
 import omni.ext
 import omni.kit.actions.core
+import omni.kit.commands
 import omni.usd
 import omni.ui as ui
 from pathlib import Path
 from omni.kit.menu.utils import MenuItemDescription, add_menu_items, remove_menu_items
-from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 
 EXTENSION_TITLE = "Hello Isaac UI"
@@ -15,6 +16,7 @@ FIXED_JOINT_NAME = "FixedJoint"
 DEFAULT_BATCH_PATH = r"E:\Data\USD\kook"
 DEFAULT_ROOT_XFORM_NAME = "root_tap"
 USD_EXTENSIONS = {".usd", ".usda", ".usdc", ".usdz"}
+REVOLUTE_AXES = ("X", "Y", "Z")
 
 
 class Extension(omni.ext.IExt):
@@ -24,11 +26,12 @@ class Extension(omni.ext.IExt):
         self._status_label = None
         self._batch_path_model = None
         self._root_name_model = None
+        self._revolute_axis_model = None
 
         self._window = ui.Window(
             EXTENSION_TITLE,
             width=360,
-            height=380,
+            height=420,
             visible=False,
             dockPreference=ui.DockPreference.LEFT_BOTTOM,
         )
@@ -71,10 +74,23 @@ class Extension(omni.ext.IExt):
                 ui.Label(EXTENSION_TITLE, height=28, style={"font_size": 20})
                 self._status_label = ui.Label("Ready.", height=24)
 
+                with ui.HStack(spacing=8, height=28):
+                    ui.Label("Revolute axis", width=110)
+                    self._revolute_axis_model = ui.ComboBox(
+                        2,
+                        *REVOLUTE_AXES,
+                        height=24,
+                    ).model
+
                 with ui.HStack(spacing=8, height=32):
                     ui.Button("Revolute", clicked_fn=self._on_revolute_clicked)
                     ui.Button("FixedJoint", clicked_fn=self._on_fixed_joint_clicked)
                     ui.Button("Reset", clicked_fn=self._on_reset_clicked)
+                ui.Button(
+                    "Revolute AABB Center",
+                    height=32,
+                    clicked_fn=self._on_revolute_aabb_center_clicked,
+                )
 
                 ui.Spacer(height=8)
                 ui.Label("Select an Xform in the Stage Tree, then create a Revolute or FixedJoint.", word_wrap=True)
@@ -114,14 +130,55 @@ class Extension(omni.ext.IExt):
         joint = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
         joint.CreateBody0Rel().SetTargets([body0_prim.GetPath()])
         joint.CreateBody1Rel().SetTargets([selected_prim.GetPath()])
-        joint.CreateAxisAttr("Z")
+        axis = self._get_revolute_axis()
+        self._configure_revolute_joint(joint, axis)
         self._add_angular_drive(joint)
 
         self._click_count += 1
         self._set_status(
-            f"Created {joint_path.name} with angularDrive: body0={body0_prim.GetName()}, body1={selected_prim.GetName()}."
+            f"Created {joint_path.name} axis={axis} with angularDrive: body0={body0_prim.GetName()}, body1={selected_prim.GetName()}."
         )
-        print(f"[{EXTENSION_TITLE}] Created {joint_path} body0={body0_prim.GetPath()} body1={selected_prim.GetPath()}")
+        print(
+            f"[{EXTENSION_TITLE}] Created {joint_path} axis={axis} "
+            f"body0={body0_prim.GetPath()} body1={selected_prim.GetPath()}"
+        )
+
+    def _on_revolute_aabb_center_clicked(self):
+        stage, selected_prim = self._get_selected_xform(require_group_prefix=True)
+        if not stage or not selected_prim:
+            return
+
+        body0_prim = self._find_group_0(stage) or self._find_top_level_xform(stage, selected_prim)
+        if not body0_prim or not body0_prim.IsValid():
+            self._set_status("Could not find group_0 or a top-level root Xform.")
+            return
+
+        center_world, _auto_axis = self._compute_world_aabb_center_and_axis(selected_prim)
+        if center_world is None:
+            self._set_status(f"Could not compute AABB center for {selected_prim.GetPath()}.")
+            return
+
+        self._ensure_rigid_body(selected_prim)
+
+        joint_path = self._make_unique_child_path(stage, selected_prim.GetPath(), REVOLUTE_JOINT_NAME)
+        joint = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
+        joint.CreateBody0Rel().SetTargets([body0_prim.GetPath()])
+        joint.CreateBody1Rel().SetTargets([selected_prim.GetPath()])
+        axis = self._get_revolute_axis()
+        self._configure_revolute_joint(joint, axis)
+        joint.CreateLocalPos0Attr(self._world_point_to_local(body0_prim, center_world))
+        joint.CreateLocalPos1Attr(self._world_point_to_local(selected_prim, center_world))
+        self._add_angular_drive(joint)
+
+        self._click_count += 1
+        center_text = f"({center_world[0]:.3f}, {center_world[1]:.3f}, {center_world[2]:.3f})"
+        self._set_status(
+            f"Created {joint_path.name} at AABB center {center_text}, axis={axis}: body0={body0_prim.GetName()}, body1={selected_prim.GetName()}."
+        )
+        print(
+            f"[{EXTENSION_TITLE}] Created {joint_path} at AABB center {center_text} axis={axis} "
+            f"body0={body0_prim.GetPath()} body1={selected_prim.GetPath()}"
+        )
 
     def _on_fixed_joint_clicked(self):
         stage, selected_prim = self._get_selected_xform(require_group_prefix=False)
@@ -148,8 +205,61 @@ class Extension(omni.ext.IExt):
 
     def _on_reset_clicked(self):
         self._click_count = 0
-        self._status_label.text = "Reset."
-        print(f"[{EXTENSION_TITLE}] Reset.")
+        self._move_all_meshes_to_group_0()
+
+    def _move_all_meshes_to_group_0(self):
+        stage = omni.usd.get_context().get_stage()
+        if not stage:
+            self._set_status("No stage is open.")
+            return
+
+        root_xform = self._find_stage_root_xform(stage)
+        if not root_xform or not root_xform.IsValid():
+            root_xform = UsdGeom.Xform.Define(stage, Sdf.Path("/World")).GetPrim()
+
+        group_path = root_xform.GetPath().AppendChild("group_0")
+        group_prim = stage.GetPrimAtPath(group_path)
+        if group_prim and group_prim.IsValid() and not group_prim.IsA(UsdGeom.Xform):
+            self._set_status(f"{group_path} already exists but is not an Xform.")
+            return
+        if not group_prim or not group_prim.IsValid():
+            group_prim = UsdGeom.Xform.Define(stage, group_path).GetPrim()
+
+        mesh_paths = [
+            prim.GetPath()
+            for prim in stage.Traverse()
+            if prim.IsA(UsdGeom.Mesh)
+        ]
+        if not mesh_paths:
+            self._set_status("No Mesh prims found.")
+            return
+
+        moved = 0
+        skipped = 0
+        reserved_names = set()
+        for mesh_path in mesh_paths:
+            mesh_prim = stage.GetPrimAtPath(mesh_path)
+            if not mesh_prim or not mesh_prim.IsValid():
+                skipped += 1
+                continue
+
+            if mesh_path.GetParentPath() == group_path:
+                skipped += 1
+                reserved_names.add(mesh_prim.GetName())
+                continue
+
+            target_path = self._make_unique_mesh_target_path(stage, group_path, mesh_prim.GetName(), reserved_names)
+            omni.kit.commands.execute(
+                "MovePrim",
+                path_from=str(mesh_path),
+                path_to=str(target_path),
+                keep_world_transform=True,
+                destructive=False,
+            )
+            moved += 1
+            reserved_names.add(target_path.name)
+
+        self._set_status(f"Moved {moved} Mesh prims to {group_path}; skipped {skipped}.")
 
     def _on_batch_articulation_root_clicked(self):
         folder_text = (
@@ -245,6 +355,16 @@ class Extension(omni.ext.IExt):
         if self._status_label:
             self._status_label.text = text
         print(f"[{EXTENSION_TITLE}] {text}")
+
+    def _get_revolute_axis(self):
+        if not self._revolute_axis_model:
+            return "Z"
+
+        index = self._revolute_axis_model.get_item_value_model().as_int
+        if index < 0 or index >= len(REVOLUTE_AXES):
+            return "Z"
+
+        return REVOLUTE_AXES[index]
 
     def _collect_usd_files(self, folder):
         return sorted(
@@ -413,6 +533,63 @@ class Extension(omni.ext.IExt):
             path = parent_path
 
         return root_xform
+
+    def _compute_world_aabb_center_and_axis(self, prim):
+        time_code = Usd.TimeCode.Default()
+        purposes = [
+            UsdGeom.Tokens.default_,
+            UsdGeom.Tokens.render,
+            UsdGeom.Tokens.proxy,
+        ]
+        bbox_cache = UsdGeom.BBoxCache(time_code, purposes, useExtentsHint=True)
+        aligned_box = bbox_cache.ComputeWorldBound(prim).ComputeAlignedBox()
+
+        if not aligned_box.IsEmpty():
+            min_point = aligned_box.GetMin()
+            max_point = aligned_box.GetMax()
+            size_x = abs(float(max_point[0] - min_point[0]))
+            size_y = abs(float(max_point[1] - min_point[1]))
+            size_z = abs(float(max_point[2] - min_point[2]))
+            face_areas = {
+                "X": size_y * size_z,
+                "Y": size_x * size_z,
+                "Z": size_x * size_y,
+            }
+            axis = max(face_areas, key=face_areas.get)
+            return aligned_box.GetMidpoint(), axis
+
+        if prim.IsA(UsdGeom.Xformable):
+            xform_cache = UsdGeom.XformCache(time_code)
+            return xform_cache.GetLocalToWorldTransform(prim).ExtractTranslation(), "Z"
+
+        return None, "Z"
+
+    def _world_point_to_local(self, prim, world_point):
+        xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+        local_point = xform_cache.GetLocalToWorldTransform(prim).GetInverse().Transform(world_point)
+        return Gf.Vec3f(
+            float(local_point[0]),
+            float(local_point[1]),
+            float(local_point[2]),
+        )
+
+    def _configure_revolute_joint(self, joint, axis):
+        joint.CreateAxisAttr(axis)
+        joint.CreateLowerLimitAttr(0.0)
+        joint.CreateUpperLimitAttr(180.0)
+
+    def _make_unique_mesh_target_path(self, stage, group_path, mesh_name, reserved_names):
+        target_path = group_path.AppendChild(mesh_name)
+        if not stage.GetPrimAtPath(target_path).IsValid() and mesh_name not in reserved_names:
+            return target_path
+
+        index = 1
+        while True:
+            candidate_name = f"{mesh_name}_{index}"
+            candidate_path = group_path.AppendChild(candidate_name)
+            if not stage.GetPrimAtPath(candidate_path).IsValid() and candidate_name not in reserved_names:
+                return candidate_path
+            index += 1
 
     def _make_unique_child_path(self, stage, parent_path, child_name):
         path = parent_path.AppendChild(child_name)

@@ -5,6 +5,7 @@ Small Isaac Sim extension that adds a `Window > Hello Isaac UI` tool window.
 ## Features
 
 - Create a `PhysicsRevoluteJoint` under the selected `group*` Xform.
+- Choose the RevoluteJoint axis from `X`, `Y`, or `Z` before creation.
 - Apply `PhysicsRigidBodyAPI` to the selected `group*` Xform.
 - Set RevoluteJoint `body0` to `group_0`; if `group_0` is missing, use the top-level root Xform.
 - Set RevoluteJoint `body1` to the selected Xform.

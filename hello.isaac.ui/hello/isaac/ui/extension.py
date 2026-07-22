@@ -18,6 +18,7 @@ DEFAULT_ROOT_XFORM_NAME = "root_tap"
 DEFAULT_MESH_BODY_XFORM_NAME = "body"
 USD_EXTENSIONS = {".usd", ".usda", ".usdc", ".usdz"}
 REVOLUTE_AXES = ("X", "Y", "Z")
+MESH_JOINT_PRESETS = ("wheel", "door")
 AABB_SIZE_TOLERANCE = 0.08
 AABB_VOLUME_TOLERANCE = 0.20
 MIN_AABB_AXIS_LENGTH = 1e-5
@@ -31,6 +32,7 @@ class Extension(omni.ext.IExt):
         self._batch_path_model = None
         self._root_name_model = None
         self._mesh_body_name_model = None
+        self._mesh_joint_preset_model = None
         self._revolute_axis_model = None
         self._aabb_size_tolerance_model = None
         self._aabb_volume_tolerance_model = None
@@ -112,6 +114,23 @@ class Extension(omni.ext.IExt):
                             "Put Selected Meshes in New Group",
                             height=32,
                             clicked_fn=self._on_group_selected_meshes_clicked,
+                        )
+                        with ui.HStack(spacing=8, height=28):
+                            ui.Label("Joint preset", width=120)
+                            self._mesh_joint_preset_model = ui.ComboBox(
+                                0,
+                                *MESH_JOINT_PRESETS,
+                                height=24,
+                            ).model
+                        ui.Button(
+                            "Put Selected Meshes in New Group + Joint",
+                            height=32,
+                            clicked_fn=self._on_group_selected_meshes_with_joint_clicked,
+                        )
+                        ui.Button(
+                            "Move Selected to group_0/body",
+                            height=32,
+                            clicked_fn=self._on_move_selected_to_group_0_body_clicked,
                         )
 
                     self._build_section_header("Shape Selection")
@@ -247,6 +266,46 @@ class Extension(omni.ext.IExt):
         print(f"[{EXTENSION_TITLE}] Created {joint_path} body0={body0_prim.GetPath()} body1={selected_prim.GetPath()}")
 
     def _on_group_selected_meshes_clicked(self):
+        body_name = self._get_mesh_body_xform_name()
+        result = self._group_selected_meshes(body_name)
+        if not result:
+            return
+
+        group_path, body_path, moved, skipped = result
+        self._set_status(f"Moved {moved} Mesh prims into {body_path}; created {group_path}; skipped {skipped}.")
+        print(f"[{EXTENSION_TITLE}] Created mesh group: {group_path}, inner Xform: {body_path}")
+
+    def _on_group_selected_meshes_with_joint_clicked(self):
+        body_name = self._get_mesh_joint_preset_name()
+        result = self._group_selected_meshes(body_name)
+        if not result:
+            return
+
+        group_path, body_path, moved, skipped = result
+        stage = omni.usd.get_context().get_stage()
+        group_prim = stage.GetPrimAtPath(group_path) if stage else None
+        if not group_prim or not group_prim.IsValid():
+            self._set_status(f"Could not find created group: {group_path}")
+            return
+
+        body_name = body_path.name
+        joint_mode = "face" if body_name == "door" else "center"
+        joint_result = self._create_revolute_joint_for_group(stage, group_prim, joint_mode)
+        if not joint_result:
+            return
+
+        joint_path, joint_point, axis = joint_result
+        point_text = f"({joint_point[0]:.3f}, {joint_point[1]:.3f}, {joint_point[2]:.3f})"
+        self._set_status(
+            f"Moved {moved} Mesh prims into {body_path}; created {group_path}; "
+            f"added {joint_path.name} at {joint_mode} {point_text}, axis={axis}; skipped {skipped}."
+        )
+        print(
+            f"[{EXTENSION_TITLE}] Created mesh group: {group_path}, inner Xform: {body_path}, "
+            f"joint={joint_path}, mode={joint_mode}, point={point_text}, axis={axis}"
+        )
+
+    def _on_move_selected_to_group_0_body_clicked(self):
         stage = omni.usd.get_context().get_stage()
         if not stage:
             self._set_status("No stage is open.")
@@ -262,28 +321,76 @@ class Extension(omni.ext.IExt):
             self._set_status("Selection does not contain any Mesh prims or Xforms with Mesh descendants.")
             return
 
+        body_path = self._ensure_root_group_0_body(stage)
+        if not body_path:
+            return
+
+        moved = 0
+        skipped = 0
+        reserved_names = set()
+        for mesh_path in mesh_paths:
+            mesh_prim = stage.GetPrimAtPath(mesh_path)
+            if not mesh_prim or not mesh_prim.IsValid():
+                skipped += 1
+                continue
+
+            if mesh_path.GetParentPath() == body_path:
+                skipped += 1
+                reserved_names.add(mesh_prim.GetName())
+                continue
+
+            target_path = self._make_unique_mesh_target_path(stage, body_path, mesh_prim.GetName(), reserved_names)
+            omni.kit.commands.execute(
+                "MovePrim",
+                path_from=str(mesh_path),
+                path_to=str(target_path),
+                keep_world_transform=True,
+                destructive=False,
+            )
+            moved += 1
+            reserved_names.add(target_path.name)
+
+        omni.usd.get_context().get_selection().set_selected_prim_paths([str(body_path)], True)
+        self._set_status(f"Moved {moved} Mesh prims into {body_path}; skipped {skipped}.")
+        print(f"[{EXTENSION_TITLE}] Moved selected meshes to {body_path}: moved={moved}, skipped={skipped}")
+
+    def _group_selected_meshes(self, body_name):
+        stage = omni.usd.get_context().get_stage()
+        if not stage:
+            self._set_status("No stage is open.")
+            return None
+
+        selected_paths = omni.usd.get_context().get_selection().get_selected_prim_paths()
+        if not selected_paths:
+            self._set_status("Select one or more Mesh or Xform prims first.")
+            return None
+
+        mesh_paths = self._collect_mesh_paths_from_selection(stage, selected_paths)
+        if not mesh_paths:
+            self._set_status("Selection does not contain any Mesh prims or Xforms with Mesh descendants.")
+            return None
+
         root_xform = self._find_stage_root_xform(stage)
         if not root_xform or not root_xform.IsValid():
             root_xform = UsdGeom.Xform.Define(stage, Sdf.Path("/World")).GetPrim()
 
         parent_path = root_xform.GetPath()
 
-        body_name = self._get_mesh_body_xform_name()
         if not Sdf.Path.IsValidIdentifier(body_name):
             self._set_status(f"Invalid inner Xform name: {body_name}")
-            return
+            return None
 
         group_path = self._make_next_group_path(stage, parent_path)
         group_prim = UsdGeom.Xform.Define(stage, group_path).GetPrim()
         if not group_prim or not group_prim.IsValid():
             self._set_status(f"Could not create Xform: {group_path}")
-            return
+            return None
 
         body_path = group_path.AppendChild(body_name)
         body_prim = UsdGeom.Xform.Define(stage, body_path).GetPrim()
         if not body_prim or not body_prim.IsValid():
             self._set_status(f"Could not create inner Xform: {body_path}")
-            return
+            return None
 
         moved = 0
         skipped = 0
@@ -306,8 +413,7 @@ class Extension(omni.ext.IExt):
             reserved_names.add(target_path.name)
 
         omni.usd.get_context().get_selection().set_selected_prim_paths([str(group_path)], True)
-        self._set_status(f"Moved {moved} Mesh prims into {body_path}; created outer group {group_path}; skipped {skipped}.")
-        print(f"[{EXTENSION_TITLE}] Created mesh group: {group_path}, inner Xform: {body_path}")
+        return group_path, body_path, moved, skipped
 
     def _on_select_similar_shape_aabb_clicked(self):
         stage = omni.usd.get_context().get_stage()
@@ -696,6 +802,50 @@ class Extension(omni.ext.IExt):
         name = self._mesh_body_name_model.get_value_as_string().strip()
         return name or DEFAULT_MESH_BODY_XFORM_NAME
 
+    def _get_mesh_joint_preset_name(self):
+        if not self._mesh_joint_preset_model:
+            return MESH_JOINT_PRESETS[0]
+
+        index = self._mesh_joint_preset_model.get_item_value_model().as_int
+        if index < 0 or index >= len(MESH_JOINT_PRESETS):
+            return MESH_JOINT_PRESETS[0]
+
+        return MESH_JOINT_PRESETS[index]
+
+    def _create_revolute_joint_for_group(self, stage, group_prim, joint_mode):
+        body0_prim = self._find_group_0(stage)
+        if body0_prim and body0_prim.GetPath() == group_prim.GetPath():
+            body0_prim = None
+        body0_prim = body0_prim or self._find_top_level_xform(stage, group_prim)
+        if not body0_prim or not body0_prim.IsValid():
+            self._set_status("Could not find group_0 or a top-level root Xform.")
+            return None
+
+        if joint_mode == "face":
+            joint_point, axis = self._compute_world_aabb_face_center_and_axis(group_prim)
+            point_label = "AABB face center"
+        else:
+            joint_point, axis = self._compute_world_aabb_center_and_axis(group_prim)
+            point_label = "AABB center"
+
+        if joint_point is None:
+            self._set_status(f"Could not compute {point_label} for {group_prim.GetPath()}.")
+            return None
+
+        self._ensure_rigid_body(group_prim)
+
+        joint_path = self._make_unique_child_path(stage, group_prim.GetPath(), REVOLUTE_JOINT_NAME)
+        joint = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
+        joint.CreateBody0Rel().SetTargets([body0_prim.GetPath()])
+        joint.CreateBody1Rel().SetTargets([group_prim.GetPath()])
+        self._configure_revolute_joint(joint, axis)
+        joint.CreateLocalPos0Attr(self._world_point_to_local(body0_prim, joint_point))
+        joint.CreateLocalPos1Attr(self._world_point_to_local(group_prim, joint_point))
+        self._add_angular_drive(joint)
+
+        self._click_count += 1
+        return joint_path, joint_point, axis
+
     def _collect_mesh_paths_from_selection(self, stage, selected_paths):
         mesh_paths = []
         seen_paths = set()
@@ -723,6 +873,29 @@ class Extension(omni.ext.IExt):
 
         seen_paths.add(path_text)
         mesh_paths.append(mesh_path)
+
+    def _ensure_root_group_0_body(self, stage):
+        root_xform = self._find_stage_root_xform(stage)
+        if not root_xform or not root_xform.IsValid():
+            root_xform = UsdGeom.Xform.Define(stage, Sdf.Path("/World")).GetPrim()
+
+        group_path = root_xform.GetPath().AppendChild("group_0")
+        group_prim = stage.GetPrimAtPath(group_path)
+        if group_prim and group_prim.IsValid() and not group_prim.IsA(UsdGeom.Xform):
+            self._set_status(f"{group_path} already exists but is not an Xform.")
+            return None
+        if not group_prim or not group_prim.IsValid():
+            group_prim = UsdGeom.Xform.Define(stage, group_path).GetPrim()
+
+        body_path = group_path.AppendChild("body")
+        body_prim = stage.GetPrimAtPath(body_path)
+        if body_prim and body_prim.IsValid() and not body_prim.IsA(UsdGeom.Xform):
+            self._set_status(f"{body_path} already exists but is not an Xform.")
+            return None
+        if not body_prim or not body_prim.IsValid():
+            body_prim = UsdGeom.Xform.Define(stage, body_path).GetPrim()
+
+        return body_path
 
     def _collect_usd_files(self, folder):
         return sorted(
@@ -921,6 +1094,45 @@ class Extension(omni.ext.IExt):
             return xform_cache.GetLocalToWorldTransform(prim).ExtractTranslation(), "Z"
 
         return None, "Z"
+
+    def _compute_world_aabb_face_center_and_axis(self, prim):
+        time_code = Usd.TimeCode.Default()
+        purposes = [
+            UsdGeom.Tokens.default_,
+            UsdGeom.Tokens.render,
+            UsdGeom.Tokens.proxy,
+        ]
+        bbox_cache = UsdGeom.BBoxCache(time_code, purposes, useExtentsHint=True)
+        aligned_box = bbox_cache.ComputeWorldBound(prim).ComputeAlignedBox()
+
+        if aligned_box.IsEmpty():
+            if prim.IsA(UsdGeom.Xformable):
+                xform_cache = UsdGeom.XformCache(time_code)
+                return xform_cache.GetLocalToWorldTransform(prim).ExtractTranslation(), self._get_revolute_axis()
+            return None, self._get_revolute_axis()
+
+        min_point = aligned_box.GetMin()
+        max_point = aligned_box.GetMax()
+        midpoint = aligned_box.GetMidpoint()
+        axis = self._get_revolute_axis()
+        axis_to_index = {"X": 0, "Y": 1, "Z": 2}
+        rotation_axis_index = axis_to_index.get(axis, 2)
+
+        sizes = [
+            abs(float(max_point[0] - min_point[0])),
+            abs(float(max_point[1] - min_point[1])),
+            abs(float(max_point[2] - min_point[2])),
+        ]
+        candidate_indices = [index for index in range(3) if index != rotation_axis_index]
+        face_axis_index = min(candidate_indices, key=lambda index: sizes[index])
+
+        face_center_values = [
+            float(midpoint[0]),
+            float(midpoint[1]),
+            float(midpoint[2]),
+        ]
+        face_center_values[face_axis_index] = float(min_point[face_axis_index])
+        return Gf.Vec3d(*face_center_values), axis
 
     def _world_point_to_local(self, prim, world_point):
         xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())

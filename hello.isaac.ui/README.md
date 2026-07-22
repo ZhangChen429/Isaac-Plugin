@@ -14,7 +14,11 @@ Small Isaac Sim extension that adds a `Window > Hello Isaac UI` tool window.
 - Apply `PhysicsRigidBodyAPI` to the selected Xform.
 - Set FixedJoint `body0` to the largest root Xform in the selected prim hierarchy.
 - Set FixedJoint `body1` to the selected Xform.
-- Put selected Mesh prims, or Mesh descendants of selected Xforms, into a new `group_N` Xform under the top-level Root Xform, then move the meshes into an inner Xform whose editable default name is `body`, while preserving world transforms.
+- Put selected Mesh prims, or Mesh descendants of selected Xforms, into a new `group_N` Xform under the top-level Root Xform, then move the meshes into an inner Xform named by the `Inner Xform name` input while preserving world transforms.
+- Use the `Joint preset` selector for the group-and-joint tool, currently `wheel` or `door`.
+- Optionally run the group-and-joint tool: in `wheel` mode it automatically adds a RevoluteJoint at the new group's AABB center.
+- Optionally run the group-and-joint tool: in `door` mode it automatically adds a RevoluteJoint at the new group's AABB face center, using the current Revolute axis as the hinge axis.
+- Move selected Mesh prims, or Mesh descendants of selected Xforms, directly into the top-level `group_0/body` Xform while preserving world transforms.
 - Reset only the selected Xform subtree by moving its Mesh prims into a `group_0` child while preserving world transforms.
 - Select AABB-similar Xform prims from a selected joint or model prim as the first-stage shape filter.
 - Tune AABB shape filtering with editable size-ratio and volume tolerance fields.

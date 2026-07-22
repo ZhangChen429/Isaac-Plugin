@@ -143,7 +143,7 @@ def make_delivery_per_folder_workbooks(headers, rows, folder_root: Path, object_
     written = 0
     skipped = 0
     folder_index = headers.index("文件夹")
-    part_index = headers.index("非group*且非根Xform数量")
+    group_index = headers.index("group* Xform数量")
     joint_index = headers.index("USD关节数量")
 
     for row in rows:
@@ -156,11 +156,11 @@ def make_delivery_per_folder_workbooks(headers, rows, folder_root: Path, object_
         output_path = folder_path / f"{folder_name}.xlsx"
         try:
             write_delivery_workbook(
-            output_path,
-            object_name=object_name,
-            part_count=row[part_index],
-            joint_count=row[joint_index],
-        )
+                output_path,
+                object_name=object_name,
+                part_count=row[group_index],
+                joint_count=row[joint_index],
+            )
             written += 1
         except PermissionError:
             print(f"Locked workbook, skipped: {output_path}")

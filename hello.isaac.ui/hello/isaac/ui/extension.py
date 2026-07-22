@@ -15,6 +15,7 @@ REVOLUTE_JOINT_NAME = "RevoluteJoint"
 FIXED_JOINT_NAME = "FixedJoint"
 DEFAULT_BATCH_PATH = r"E:\Data\USD\kook"
 DEFAULT_ROOT_XFORM_NAME = "root_tap"
+DEFAULT_MESH_BODY_XFORM_NAME = "body"
 USD_EXTENSIONS = {".usd", ".usda", ".usdc", ".usdz"}
 REVOLUTE_AXES = ("X", "Y", "Z")
 AABB_SIZE_TOLERANCE = 0.08
@@ -29,6 +30,7 @@ class Extension(omni.ext.IExt):
         self._status_label = None
         self._batch_path_model = None
         self._root_name_model = None
+        self._mesh_body_name_model = None
         self._revolute_axis_model = None
         self._aabb_size_tolerance_model = None
         self._aabb_volume_tolerance_model = None
@@ -102,8 +104,12 @@ class Extension(omni.ext.IExt):
 
                     self._build_section_header("Mesh Tools")
                     with ui.VStack(spacing=6, height=0):
+                        with ui.HStack(spacing=8, height=28):
+                            ui.Label("Inner Xform name", width=120)
+                            self._mesh_body_name_model = ui.SimpleStringModel(DEFAULT_MESH_BODY_XFORM_NAME)
+                            ui.StringField(model=self._mesh_body_name_model, height=24)
                         ui.Button(
-                            "Put Selected Meshes in New Xform",
+                            "Put Selected Meshes in New Group",
                             height=32,
                             clicked_fn=self._on_group_selected_meshes_clicked,
                         )
@@ -266,10 +272,21 @@ class Extension(omni.ext.IExt):
             self._set_status("Could not find a common Xform parent for selected Mesh prims.")
             return
 
-        group_path = self._make_unique_child_path(stage, parent_path, "selected_meshes")
+        body_name = self._get_mesh_body_xform_name()
+        if not Sdf.Path.IsValidIdentifier(body_name):
+            self._set_status(f"Invalid inner Xform name: {body_name}")
+            return
+
+        group_path = self._make_next_group_path(stage, parent_path)
         group_prim = UsdGeom.Xform.Define(stage, group_path).GetPrim()
         if not group_prim or not group_prim.IsValid():
             self._set_status(f"Could not create Xform: {group_path}")
+            return
+
+        body_path = group_path.AppendChild(body_name)
+        body_prim = UsdGeom.Xform.Define(stage, body_path).GetPrim()
+        if not body_prim or not body_prim.IsValid():
+            self._set_status(f"Could not create inner Xform: {body_path}")
             return
 
         moved = 0
@@ -281,7 +298,7 @@ class Extension(omni.ext.IExt):
                 skipped += 1
                 continue
 
-            target_path = self._make_unique_mesh_target_path(stage, group_path, mesh_prim.GetName(), reserved_names)
+            target_path = self._make_unique_mesh_target_path(stage, body_path, mesh_prim.GetName(), reserved_names)
             omni.kit.commands.execute(
                 "MovePrim",
                 path_from=str(mesh_path),
@@ -293,8 +310,8 @@ class Extension(omni.ext.IExt):
             reserved_names.add(target_path.name)
 
         omni.usd.get_context().get_selection().set_selected_prim_paths([str(group_path)], True)
-        self._set_status(f"Moved {moved} Mesh prims into new Xform {group_path}; skipped {skipped}.")
-        print(f"[{EXTENSION_TITLE}] Created mesh group: {group_path}")
+        self._set_status(f"Moved {moved} Mesh prims into {body_path}; created outer group {group_path}; skipped {skipped}.")
+        print(f"[{EXTENSION_TITLE}] Created mesh group: {group_path}, inner Xform: {body_path}")
 
     def _on_select_similar_shape_aabb_clicked(self):
         stage = omni.usd.get_context().get_stage()
@@ -676,6 +693,13 @@ class Extension(omni.ext.IExt):
 
         return REVOLUTE_AXES[index]
 
+    def _get_mesh_body_xform_name(self):
+        if not self._mesh_body_name_model:
+            return DEFAULT_MESH_BODY_XFORM_NAME
+
+        name = self._mesh_body_name_model.get_value_as_string().strip()
+        return name or DEFAULT_MESH_BODY_XFORM_NAME
+
     def _collect_usd_files(self, folder):
         return sorted(
             [
@@ -899,6 +923,28 @@ class Extension(omni.ext.IExt):
             candidate_path = group_path.AppendChild(candidate_name)
             if not stage.GetPrimAtPath(candidate_path).IsValid() and candidate_name not in reserved_names:
                 return candidate_path
+            index += 1
+
+    def _make_next_group_path(self, stage, parent_path):
+        used_indices = set()
+        parent_prim = stage.GetPrimAtPath(parent_path)
+        if parent_prim and parent_prim.IsValid():
+            for child in parent_prim.GetChildren():
+                name = child.GetName()
+                if not name.startswith("group_"):
+                    continue
+                suffix = name[len("group_"):]
+                if suffix.isdigit():
+                    used_indices.add(int(suffix))
+
+        index = 0
+        while index in used_indices:
+            index += 1
+
+        while True:
+            group_path = parent_path.AppendChild(f"group_{index}")
+            if not stage.GetPrimAtPath(group_path).IsValid():
+                return group_path
             index += 1
 
     def _find_common_xform_parent_path(self, stage, prim_paths):

@@ -254,23 +254,19 @@ class Extension(omni.ext.IExt):
 
         selected_paths = omni.usd.get_context().get_selection().get_selected_prim_paths()
         if not selected_paths:
-            self._set_status("Select one or more Mesh prims first.")
+            self._set_status("Select one or more Mesh or Xform prims first.")
             return
 
-        mesh_paths = []
-        for selected_path in selected_paths:
-            prim = stage.GetPrimAtPath(selected_path)
-            if prim and prim.IsValid() and prim.IsA(UsdGeom.Mesh):
-                mesh_paths.append(prim.GetPath())
-
+        mesh_paths = self._collect_mesh_paths_from_selection(stage, selected_paths)
         if not mesh_paths:
-            self._set_status("Selection does not contain any Mesh prims.")
+            self._set_status("Selection does not contain any Mesh prims or Xforms with Mesh descendants.")
             return
 
-        parent_path = self._find_common_xform_parent_path(stage, mesh_paths)
-        if not parent_path:
-            self._set_status("Could not find a common Xform parent for selected Mesh prims.")
-            return
+        root_xform = self._find_stage_root_xform(stage)
+        if not root_xform or not root_xform.IsValid():
+            root_xform = UsdGeom.Xform.Define(stage, Sdf.Path("/World")).GetPrim()
+
+        parent_path = root_xform.GetPath()
 
         body_name = self._get_mesh_body_xform_name()
         if not Sdf.Path.IsValidIdentifier(body_name):
@@ -699,6 +695,34 @@ class Extension(omni.ext.IExt):
 
         name = self._mesh_body_name_model.get_value_as_string().strip()
         return name or DEFAULT_MESH_BODY_XFORM_NAME
+
+    def _collect_mesh_paths_from_selection(self, stage, selected_paths):
+        mesh_paths = []
+        seen_paths = set()
+
+        for selected_path in selected_paths:
+            prim = stage.GetPrimAtPath(selected_path)
+            if not prim or not prim.IsValid():
+                continue
+
+            if prim.IsA(UsdGeom.Mesh):
+                self._append_unique_mesh_path(mesh_paths, seen_paths, prim.GetPath())
+                continue
+
+            if prim.IsA(UsdGeom.Xform):
+                for child_prim in Usd.PrimRange(prim):
+                    if child_prim.IsA(UsdGeom.Mesh):
+                        self._append_unique_mesh_path(mesh_paths, seen_paths, child_prim.GetPath())
+
+        return mesh_paths
+
+    def _append_unique_mesh_path(self, mesh_paths, seen_paths, mesh_path):
+        path_text = str(mesh_path)
+        if path_text in seen_paths:
+            return
+
+        seen_paths.add(path_text)
+        mesh_paths.append(mesh_path)
 
     def _collect_usd_files(self, folder):
         return sorted(

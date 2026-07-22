@@ -17,6 +17,9 @@ DEFAULT_BATCH_PATH = r"E:\Data\USD\kook"
 DEFAULT_ROOT_XFORM_NAME = "root_tap"
 USD_EXTENSIONS = {".usd", ".usda", ".usdc", ".usdz"}
 REVOLUTE_AXES = ("X", "Y", "Z")
+AABB_SIZE_TOLERANCE = 0.08
+AABB_VOLUME_TOLERANCE = 0.20
+MIN_AABB_AXIS_LENGTH = 1e-5
 
 
 class Extension(omni.ext.IExt):
@@ -27,11 +30,13 @@ class Extension(omni.ext.IExt):
         self._batch_path_model = None
         self._root_name_model = None
         self._revolute_axis_model = None
+        self._aabb_size_tolerance_model = None
+        self._aabb_volume_tolerance_model = None
 
         self._window = ui.Window(
             EXTENSION_TITLE,
-            width=360,
-            height=420,
+            width=430,
+            height=560,
             visible=False,
             dockPreference=ui.DockPreference.LEFT_BOTTOM,
         )
@@ -70,49 +75,81 @@ class Extension(omni.ext.IExt):
 
     def _build_ui(self):
         with self._window.frame:
-            with ui.VStack(spacing=10, height=0):
-                ui.Label(EXTENSION_TITLE, height=28, style={"font_size": 20})
-                self._status_label = ui.Label("Ready.", height=24)
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=8, height=0):
+                    ui.Label(EXTENSION_TITLE, height=28, style={"font_size": 20})
+                    self._status_label = ui.Label("Ready.", height=24, word_wrap=True)
 
-                with ui.HStack(spacing=8, height=28):
-                    ui.Label("Revolute axis", width=110)
-                    self._revolute_axis_model = ui.ComboBox(
-                        2,
-                        *REVOLUTE_AXES,
-                        height=24,
-                    ).model
+                    self._build_section_header("Joint Tools")
+                    with ui.VStack(spacing=6, height=0):
+                        with ui.HStack(spacing=8, height=28):
+                            ui.Label("Revolute axis", width=120)
+                            self._revolute_axis_model = ui.ComboBox(
+                                2,
+                                *REVOLUTE_AXES,
+                                height=24,
+                            ).model
 
-                with ui.HStack(spacing=8, height=32):
-                    ui.Button("Revolute", clicked_fn=self._on_revolute_clicked)
-                    ui.Button("FixedJoint", clicked_fn=self._on_fixed_joint_clicked)
-                    ui.Button("Reset", clicked_fn=self._on_reset_clicked)
-                ui.Button(
-                    "Revolute AABB Center",
-                    height=32,
-                    clicked_fn=self._on_revolute_aabb_center_clicked,
-                )
+                        with ui.HStack(spacing=8, height=32):
+                            ui.Button("Revolute", clicked_fn=self._on_revolute_clicked)
+                            ui.Button("FixedJoint", clicked_fn=self._on_fixed_joint_clicked)
+                            ui.Button("Reset Selected", clicked_fn=self._on_reset_clicked)
+                        ui.Button(
+                            "Revolute AABB Center",
+                            height=32,
+                            clicked_fn=self._on_revolute_aabb_center_clicked,
+                        )
 
-                ui.Spacer(height=8)
-                ui.Label("Select an Xform in the Stage Tree, then create a Revolute or FixedJoint.", word_wrap=True)
+                    self._build_section_header("Mesh Tools")
+                    with ui.VStack(spacing=6, height=0):
+                        ui.Button(
+                            "Put Selected Meshes in New Xform",
+                            height=32,
+                            clicked_fn=self._on_group_selected_meshes_clicked,
+                        )
 
-                ui.Spacer(height=10)
-                ui.Label("Batch USD folder:", height=20)
-                self._batch_path_model = ui.SimpleStringModel(DEFAULT_BATCH_PATH)
-                ui.StringField(model=self._batch_path_model, height=28)
-                ui.Button(
-                    "Add ArticulationRoot to missing root Xforms",
-                    height=32,
-                    clicked_fn=self._on_batch_articulation_root_clicked,
-                )
-                ui.Spacer(height=8)
-                ui.Label("Root Xform name:", height=20)
-                self._root_name_model = ui.SimpleStringModel(DEFAULT_ROOT_XFORM_NAME)
-                ui.StringField(model=self._root_name_model, height=28)
-                ui.Button(
-                    "Rename root Xforms in USD folder",
-                    height=32,
-                    clicked_fn=self._on_batch_rename_root_xform_clicked,
-                )
+                    self._build_section_header("Shape Selection")
+                    with ui.VStack(spacing=6, height=0):
+                        ui.Button(
+                            "Select Similar Shape by AABB",
+                            height=32,
+                            clicked_fn=self._on_select_similar_shape_aabb_clicked,
+                        )
+                        with ui.HStack(spacing=8, height=28):
+                            ui.Label("Size tolerance", width=120)
+                            self._aabb_size_tolerance_model = ui.SimpleFloatModel(AABB_SIZE_TOLERANCE)
+                            ui.FloatField(model=self._aabb_size_tolerance_model, height=24)
+                        with ui.HStack(spacing=8, height=28):
+                            ui.Label("Volume tolerance", width=120)
+                            self._aabb_volume_tolerance_model = ui.SimpleFloatModel(AABB_VOLUME_TOLERANCE)
+                            ui.FloatField(model=self._aabb_volume_tolerance_model, height=24)
+
+                    self._build_section_header("Batch USD")
+                    with ui.VStack(spacing=6, height=0):
+                        ui.Label("Folder", height=18)
+                        self._batch_path_model = ui.SimpleStringModel(DEFAULT_BATCH_PATH)
+                        ui.StringField(model=self._batch_path_model, height=28)
+                        ui.Button(
+                            "Add ArticulationRoot to missing root Xforms",
+                            height=32,
+                            clicked_fn=self._on_batch_articulation_root_clicked,
+                        )
+                        with ui.HStack(spacing=8, height=28):
+                            ui.Label("Root Xform name", width=120)
+                            self._root_name_model = ui.SimpleStringModel(DEFAULT_ROOT_XFORM_NAME)
+                            ui.StringField(model=self._root_name_model, height=24)
+                        ui.Button(
+                            "Rename root Xforms in USD folder",
+                            height=32,
+                            clicked_fn=self._on_batch_rename_root_xform_clicked,
+                        )
+
+                    ui.Spacer(height=4)
+
+    def _build_section_header(self, title):
+        ui.Spacer(height=4)
+        ui.Separator(height=1)
+        ui.Label(title, height=22, style={"font_size": 16})
 
     def _on_revolute_clicked(self):
         stage, selected_prim = self._get_selected_xform(require_group_prefix=True)
@@ -153,7 +190,7 @@ class Extension(omni.ext.IExt):
             self._set_status("Could not find group_0 or a top-level root Xform.")
             return
 
-        center_world, _auto_axis = self._compute_world_aabb_center_and_axis(selected_prim)
+        center_world, auto_axis = self._compute_world_aabb_center_and_axis(selected_prim)
         if center_world is None:
             self._set_status(f"Could not compute AABB center for {selected_prim.GetPath()}.")
             return
@@ -164,7 +201,7 @@ class Extension(omni.ext.IExt):
         joint = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
         joint.CreateBody0Rel().SetTargets([body0_prim.GetPath()])
         joint.CreateBody1Rel().SetTargets([selected_prim.GetPath()])
-        axis = self._get_revolute_axis()
+        axis = auto_axis
         self._configure_revolute_joint(joint, axis)
         joint.CreateLocalPos0Attr(self._world_point_to_local(body0_prim, center_world))
         joint.CreateLocalPos1Attr(self._world_point_to_local(selected_prim, center_world))
@@ -203,19 +240,123 @@ class Extension(omni.ext.IExt):
         )
         print(f"[{EXTENSION_TITLE}] Created {joint_path} body0={body0_prim.GetPath()} body1={selected_prim.GetPath()}")
 
-    def _on_reset_clicked(self):
-        self._click_count = 0
-        self._move_all_meshes_to_group_0()
-
-    def _move_all_meshes_to_group_0(self):
+    def _on_group_selected_meshes_clicked(self):
         stage = omni.usd.get_context().get_stage()
         if not stage:
             self._set_status("No stage is open.")
             return
 
-        root_xform = self._find_stage_root_xform(stage)
-        if not root_xform or not root_xform.IsValid():
-            root_xform = UsdGeom.Xform.Define(stage, Sdf.Path("/World")).GetPrim()
+        selected_paths = omni.usd.get_context().get_selection().get_selected_prim_paths()
+        if not selected_paths:
+            self._set_status("Select one or more Mesh prims first.")
+            return
+
+        mesh_paths = []
+        for selected_path in selected_paths:
+            prim = stage.GetPrimAtPath(selected_path)
+            if prim and prim.IsValid() and prim.IsA(UsdGeom.Mesh):
+                mesh_paths.append(prim.GetPath())
+
+        if not mesh_paths:
+            self._set_status("Selection does not contain any Mesh prims.")
+            return
+
+        parent_path = self._find_common_xform_parent_path(stage, mesh_paths)
+        if not parent_path:
+            self._set_status("Could not find a common Xform parent for selected Mesh prims.")
+            return
+
+        group_path = self._make_unique_child_path(stage, parent_path, "selected_meshes")
+        group_prim = UsdGeom.Xform.Define(stage, group_path).GetPrim()
+        if not group_prim or not group_prim.IsValid():
+            self._set_status(f"Could not create Xform: {group_path}")
+            return
+
+        moved = 0
+        skipped = 0
+        reserved_names = set()
+        for mesh_path in mesh_paths:
+            mesh_prim = stage.GetPrimAtPath(mesh_path)
+            if not mesh_prim or not mesh_prim.IsValid():
+                skipped += 1
+                continue
+
+            target_path = self._make_unique_mesh_target_path(stage, group_path, mesh_prim.GetName(), reserved_names)
+            omni.kit.commands.execute(
+                "MovePrim",
+                path_from=str(mesh_path),
+                path_to=str(target_path),
+                keep_world_transform=True,
+                destructive=False,
+            )
+            moved += 1
+            reserved_names.add(target_path.name)
+
+        omni.usd.get_context().get_selection().set_selected_prim_paths([str(group_path)], True)
+        self._set_status(f"Moved {moved} Mesh prims into new Xform {group_path}; skipped {skipped}.")
+        print(f"[{EXTENSION_TITLE}] Created mesh group: {group_path}")
+
+    def _on_select_similar_shape_aabb_clicked(self):
+        stage = omni.usd.get_context().get_stage()
+        if not stage:
+            self._set_status("No stage is open.")
+            return
+
+        selected_paths = omni.usd.get_context().get_selection().get_selected_prim_paths()
+        if not selected_paths:
+            self._set_status("Select one track joint or model prim first.")
+            return
+
+        selected_prim = stage.GetPrimAtPath(selected_paths[0])
+        if not selected_prim or not selected_prim.IsValid():
+            self._set_status("Selected prim is invalid.")
+            return
+
+        source_prim = self._resolve_model_prim_from_selection(stage, selected_prim)
+        if not source_prim or not source_prim.IsValid():
+            self._set_status(f"Could not resolve a model prim from {selected_prim.GetPath()}.")
+            return
+
+        size_tolerance = self._get_aabb_size_tolerance()
+        volume_tolerance = self._get_aabb_volume_tolerance()
+        matches, details = self._find_similar_shape_prims_by_aabb(
+            stage,
+            source_prim,
+            size_tolerance,
+            volume_tolerance,
+        )
+        if not matches:
+            self._set_status(
+                f"No AABB-similar prims found for {source_prim.GetPath()} "
+                f"with size_tol={size_tolerance:.3f}, volume_tol={volume_tolerance:.3f}."
+            )
+            return
+
+        match_paths = [str(prim.GetPath()) for prim, _score, _dims, _volume in matches]
+        omni.usd.get_context().get_selection().set_selected_prim_paths(match_paths, True)
+        self._set_status(
+            f"Selected {len(match_paths)} AABB-similar prims; source={source_prim.GetPath()}."
+        )
+        print(f"[{EXTENSION_TITLE}] AABB source from selection: {selected_prim.GetPath()} -> {source_prim.GetPath()}")
+        print(
+            f"[{EXTENSION_TITLE}] source dims(sorted)={details['source_dims']} "
+            f"normalized={details['source_normalized']} volume={details['source_volume']:.6f} "
+            f"size_tolerance={size_tolerance:.3f} volume_tolerance={volume_tolerance:.3f}"
+        )
+        for prim, score, dims, volume in matches:
+            print(
+                f"[{EXTENSION_TITLE}] AABB match score={score:.3f} "
+                f"dims(sorted)={dims} volume={volume:.6f}: {prim.GetPath()}"
+            )
+
+    def _on_reset_clicked(self):
+        self._click_count = 0
+        self._move_selected_xform_meshes_to_group_0()
+
+    def _move_selected_xform_meshes_to_group_0(self):
+        stage, root_xform = self._get_selected_xform(require_group_prefix=False)
+        if not stage or not root_xform:
+            return
 
         group_path = root_xform.GetPath().AppendChild("group_0")
         group_prim = stage.GetPrimAtPath(group_path)
@@ -227,11 +368,11 @@ class Extension(omni.ext.IExt):
 
         mesh_paths = [
             prim.GetPath()
-            for prim in stage.Traverse()
+            for prim in Usd.PrimRange(root_xform)
             if prim.IsA(UsdGeom.Mesh)
         ]
         if not mesh_paths:
-            self._set_status("No Mesh prims found.")
+            self._set_status(f"No Mesh prims found under {root_xform.GetPath()}.")
             return
 
         moved = 0
@@ -259,7 +400,9 @@ class Extension(omni.ext.IExt):
             moved += 1
             reserved_names.add(target_path.name)
 
-        self._set_status(f"Moved {moved} Mesh prims to {group_path}; skipped {skipped}.")
+        self._set_status(
+            f"Moved {moved} Mesh prims under {root_xform.GetPath()} to {group_path}; skipped {skipped}."
+        )
 
     def _on_batch_articulation_root_clicked(self):
         folder_text = (
@@ -355,6 +498,173 @@ class Extension(omni.ext.IExt):
         if self._status_label:
             self._status_label.text = text
         print(f"[{EXTENSION_TITLE}] {text}")
+
+    def _resolve_model_prim_from_selection(self, stage, selected_prim):
+        if self._is_physics_joint(selected_prim):
+            body_prim = self._get_joint_body_prim(stage, selected_prim, prefer_body1=True)
+            if body_prim and body_prim.IsValid():
+                return self._find_model_root_for_prim(body_prim)
+
+        return self._find_model_root_for_prim(selected_prim)
+
+    def _is_physics_joint(self, prim):
+        type_name = prim.GetTypeName()
+        return (
+            type_name.startswith("Physics") and type_name.endswith("Joint")
+        ) or prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.FixedJoint)
+
+    def _get_joint_body_prim(self, stage, joint_prim, prefer_body1):
+        body_names = ("body1", "body0") if prefer_body1 else ("body0", "body1")
+        for body_name in body_names:
+            rel = joint_prim.GetRelationship(f"physics:{body_name}")
+            if not rel:
+                continue
+
+            targets = rel.GetTargets()
+            for target in targets:
+                body_prim = stage.GetPrimAtPath(target)
+                if body_prim and body_prim.IsValid():
+                    return body_prim
+
+        return None
+
+    def _find_model_root_for_prim(self, prim):
+        if prim.IsA(UsdGeom.Xform):
+            return prim
+
+        path = prim.GetPath()
+        stage = prim.GetStage()
+        while path != path.absoluteRootPath:
+            parent_path = path.GetParentPath()
+            if parent_path == path.absoluteRootPath:
+                break
+
+            parent_prim = stage.GetPrimAtPath(parent_path)
+            if (
+                parent_prim
+                and parent_prim.IsValid()
+                and parent_prim.IsA(UsdGeom.Xform)
+            ):
+                return parent_prim
+
+            path = parent_path
+
+        return prim
+
+    def _find_similar_shape_prims_by_aabb(self, stage, source_prim, size_tolerance, volume_tolerance):
+        bbox_cache = self._make_bbox_cache()
+        source_sig = self._compute_aabb_signature(bbox_cache, source_prim)
+        if not source_sig:
+            return [], {}
+
+        source_dims, source_normalized, source_volume = source_sig
+        matches = []
+
+        for prim in stage.Traverse():
+            if not prim.IsA(UsdGeom.Xform):
+                continue
+            if not self._has_mesh_descendant(prim):
+                continue
+
+            candidate_sig = self._compute_aabb_signature(bbox_cache, prim)
+            if not candidate_sig:
+                continue
+
+            dims, normalized, volume = candidate_sig
+            size_delta = self._max_abs_delta(source_normalized, normalized)
+            volume_delta = self._relative_delta(source_volume, volume)
+
+            if size_delta <= size_tolerance and volume_delta <= volume_tolerance:
+                score = max(
+                    0.0,
+                    1.0
+                    - (size_delta / max(size_tolerance, MIN_AABB_AXIS_LENGTH)) * 0.7
+                    - (volume_delta / max(volume_tolerance, MIN_AABB_AXIS_LENGTH)) * 0.3,
+                )
+                matches.append((prim, score, dims, volume))
+
+        matches.sort(key=lambda item: (-item[1], item[0].GetPath().pathString))
+        details = {
+            "source_dims": source_dims,
+            "source_normalized": source_normalized,
+            "source_volume": source_volume,
+        }
+        return matches, details
+
+    def _get_aabb_size_tolerance(self):
+        return self._get_positive_float_model_value(
+            self._aabb_size_tolerance_model,
+            AABB_SIZE_TOLERANCE,
+            minimum=0.0,
+            maximum=1.0,
+        )
+
+    def _get_aabb_volume_tolerance(self):
+        return self._get_positive_float_model_value(
+            self._aabb_volume_tolerance_model,
+            AABB_VOLUME_TOLERANCE,
+            minimum=0.0,
+            maximum=10.0,
+        )
+
+    def _get_positive_float_model_value(self, model, default_value, minimum, maximum):
+        if not model:
+            return default_value
+
+        try:
+            value = float(model.as_float)
+        except Exception:
+            return default_value
+
+        if value < minimum:
+            return minimum
+        if value > maximum:
+            return maximum
+        return value
+
+    def _make_bbox_cache(self):
+        purposes = [
+            UsdGeom.Tokens.default_,
+            UsdGeom.Tokens.render,
+            UsdGeom.Tokens.proxy,
+        ]
+        return UsdGeom.BBoxCache(Usd.TimeCode.Default(), purposes, useExtentsHint=True)
+
+    def _compute_aabb_signature(self, bbox_cache, prim):
+        aligned_box = bbox_cache.ComputeWorldBound(prim).ComputeAlignedBox()
+        if aligned_box.IsEmpty():
+            return None
+
+        min_point = aligned_box.GetMin()
+        max_point = aligned_box.GetMax()
+        dims = sorted(
+            [
+                abs(float(max_point[0] - min_point[0])),
+                abs(float(max_point[1] - min_point[1])),
+                abs(float(max_point[2] - min_point[2])),
+            ],
+            reverse=True,
+        )
+        if dims[0] <= MIN_AABB_AXIS_LENGTH:
+            return None
+
+        normalized = tuple(round(dim / dims[0], 6) for dim in dims)
+        volume = max(dims[0], MIN_AABB_AXIS_LENGTH) * max(dims[1], MIN_AABB_AXIS_LENGTH) * max(dims[2], MIN_AABB_AXIS_LENGTH)
+        rounded_dims = tuple(round(dim, 6) for dim in dims)
+        return rounded_dims, normalized, volume
+
+    def _has_mesh_descendant(self, prim):
+        for child_prim in Usd.PrimRange(prim):
+            if child_prim.IsA(UsdGeom.Mesh):
+                return True
+        return False
+
+    def _max_abs_delta(self, values_a, values_b):
+        return max(abs(float(a) - float(b)) for a, b in zip(values_a, values_b))
+
+    def _relative_delta(self, value_a, value_b):
+        denominator = max(abs(float(value_a)), abs(float(value_b)), MIN_AABB_AXIS_LENGTH)
+        return abs(float(value_a) - float(value_b)) / denominator
 
     def _get_revolute_axis(self):
         if not self._revolute_axis_model:
@@ -590,6 +900,32 @@ class Extension(omni.ext.IExt):
             if not stage.GetPrimAtPath(candidate_path).IsValid() and candidate_name not in reserved_names:
                 return candidate_path
             index += 1
+
+    def _find_common_xform_parent_path(self, stage, prim_paths):
+        if not prim_paths:
+            return None
+
+        ancestor_sets = []
+        for prim_path in prim_paths:
+            ancestors = []
+            current_path = prim_path.GetParentPath()
+            while current_path != current_path.absoluteRootPath:
+                prim = stage.GetPrimAtPath(current_path)
+                if prim and prim.IsValid() and prim.IsA(UsdGeom.Xform):
+                    ancestors.append(current_path)
+                current_path = current_path.GetParentPath()
+            ancestor_sets.append(ancestors)
+
+        first_ancestors = ancestor_sets[0]
+        for candidate_path in first_ancestors:
+            if all(candidate_path in ancestors for ancestors in ancestor_sets[1:]):
+                return candidate_path
+
+        root_xform = self._find_stage_root_xform(stage)
+        if root_xform and root_xform.IsValid():
+            return root_xform.GetPath()
+
+        return Sdf.Path("/World")
 
     def _make_unique_child_path(self, stage, parent_path, child_name):
         path = parent_path.AppendChild(child_name)

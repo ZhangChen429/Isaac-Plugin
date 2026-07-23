@@ -362,9 +362,16 @@ class Extension(omni.ext.IExt):
             moved += 1
             reserved_names.add(target_path.name)
 
+        body_prim = stage.GetPrimAtPath(body_path)
+        hidden = body_path.name != "body" and self._hide_prim(body_prim)
+
         omni.usd.get_context().get_selection().set_selected_prim_paths([str(body_path)], True)
-        self._set_status(f"Moved {moved} Mesh prims into {body_path}; skipped {skipped}.")
-        print(f"[{EXTENSION_TITLE}] Moved selected meshes to {body_path}: moved={moved}, skipped={skipped}")
+        hidden_text = "hidden" if hidden else "not hidden"
+        self._set_status(f"Moved {moved} Mesh prims into {body_path}; {hidden_text}; skipped {skipped}.")
+        print(
+            f"[{EXTENSION_TITLE}] Moved selected meshes to {body_path}: "
+            f"moved={moved}, skipped={skipped}, hidden={hidden}"
+        )
 
     def _on_clear_empty_xforms_clicked(self):
         stage = omni.usd.get_context().get_stage()
@@ -929,6 +936,13 @@ class Extension(omni.ext.IExt):
 
         empty_paths.sort(key=lambda path: path.count("/"), reverse=True)
         return empty_paths
+
+    def _hide_prim(self, prim):
+        if not prim or not prim.IsValid() or not prim.IsA(UsdGeom.Imageable):
+            return False
+
+        UsdGeom.Imageable(prim).MakeInvisible()
+        return True
 
     def _ensure_root_group_0_inner_xform(self, stage, inner_xform_name):
         root_xform = self._find_stage_root_xform(stage)

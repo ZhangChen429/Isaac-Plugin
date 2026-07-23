@@ -18,8 +18,9 @@ Small Isaac Sim extension that adds a `Window > Hello Isaac UI` tool window.
 - Use the `Joint preset` selector for the group-and-joint tool, currently `wheel` or `door`.
 - Optionally run the group-and-joint tool: in `wheel` mode it automatically adds a RevoluteJoint at the new group's AABB center.
 - Optionally run the group-and-joint tool: in `door` mode it automatically adds a RevoluteJoint at the new group's AABB face center, using the current Revolute axis as the hinge axis.
-- Move selected Mesh prims, or Mesh descendants of selected Xforms, directly into the top-level `group_0/body` Xform while preserving world transforms.
+- Move selected Mesh prims, or Mesh descendants of selected Xforms, directly into `group_0/<Inner Xform name>` while preserving world transforms. If the name is `body`, the tool uses `group_0/body` directly; otherwise it creates a unique sibling such as `wheel`, `wheel_1`, or `wheel_2`.
 - Reset only the selected Xform subtree by moving its Mesh prims into a `group_0` child while preserving world transforms.
+- Delete empty Xform prims while preserving the top-level Root Xform and DefaultPrim.
 - Select AABB-similar Xform prims from a selected joint or model prim as the first-stage shape filter.
 - Tune AABB shape filtering with editable size-ratio and volume tolerance fields.
 

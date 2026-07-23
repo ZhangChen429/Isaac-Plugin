@@ -128,7 +128,7 @@ class Extension(omni.ext.IExt):
                             clicked_fn=self._on_group_selected_meshes_with_joint_clicked,
                         )
                         ui.Button(
-                            "Move Selected to group_0/body",
+                            "Move Selected to group_0/<Inner Xform>",
                             height=32,
                             clicked_fn=self._on_move_selected_to_group_0_body_clicked,
                         )
@@ -168,6 +168,13 @@ class Extension(omni.ext.IExt):
                             height=32,
                             clicked_fn=self._on_batch_rename_root_xform_clicked,
                         )
+
+                    self._build_section_header("Cleanup")
+                    ui.Button(
+                        "Clear Empty Xforms",
+                        height=32,
+                        clicked_fn=self._on_clear_empty_xforms_clicked,
+                    )
 
                     ui.Spacer(height=4)
 
@@ -321,7 +328,12 @@ class Extension(omni.ext.IExt):
             self._set_status("Selection does not contain any Mesh prims or Xforms with Mesh descendants.")
             return
 
-        body_path = self._ensure_root_group_0_body(stage)
+        body_name = self._get_mesh_body_xform_name()
+        if not Sdf.Path.IsValidIdentifier(body_name):
+            self._set_status(f"Invalid inner Xform name: {body_name}")
+            return
+
+        body_path = self._ensure_root_group_0_inner_xform(stage, body_name)
         if not body_path:
             return
 
@@ -353,6 +365,33 @@ class Extension(omni.ext.IExt):
         omni.usd.get_context().get_selection().set_selected_prim_paths([str(body_path)], True)
         self._set_status(f"Moved {moved} Mesh prims into {body_path}; skipped {skipped}.")
         print(f"[{EXTENSION_TITLE}] Moved selected meshes to {body_path}: moved={moved}, skipped={skipped}")
+
+    def _on_clear_empty_xforms_clicked(self):
+        stage = omni.usd.get_context().get_stage()
+        if not stage:
+            self._set_status("No stage is open.")
+            return
+
+        protected_paths = set()
+        root_xform = self._find_stage_root_xform(stage)
+        if root_xform and root_xform.IsValid():
+            protected_paths.add(str(root_xform.GetPath()))
+
+        default_prim = stage.GetDefaultPrim()
+        if default_prim and default_prim.IsValid():
+            protected_paths.add(str(default_prim.GetPath()))
+
+        total_deleted = 0
+        while True:
+            empty_xform_paths = self._find_empty_xform_paths(stage, protected_paths)
+            if not empty_xform_paths:
+                break
+
+            omni.kit.commands.execute("DeletePrims", paths=empty_xform_paths)
+            total_deleted += len(empty_xform_paths)
+
+        self._set_status(f"Deleted {total_deleted} empty Xform prims.")
+        print(f"[{EXTENSION_TITLE}] Deleted {total_deleted} empty Xform prims.")
 
     def _group_selected_meshes(self, body_name):
         stage = omni.usd.get_context().get_stage()
@@ -874,7 +913,24 @@ class Extension(omni.ext.IExt):
         seen_paths.add(path_text)
         mesh_paths.append(mesh_path)
 
-    def _ensure_root_group_0_body(self, stage):
+    def _find_empty_xform_paths(self, stage, protected_paths):
+        empty_paths = []
+        for prim in stage.TraverseAll():
+            if not prim.IsA(UsdGeom.Xform):
+                continue
+
+            prim_path = prim.GetPath()
+            prim_path_text = str(prim_path)
+            if prim_path_text in protected_paths:
+                continue
+
+            if not list(prim.GetChildren()):
+                empty_paths.append(prim_path_text)
+
+        empty_paths.sort(key=lambda path: path.count("/"), reverse=True)
+        return empty_paths
+
+    def _ensure_root_group_0_inner_xform(self, stage, inner_xform_name):
         root_xform = self._find_stage_root_xform(stage)
         if not root_xform or not root_xform.IsValid():
             root_xform = UsdGeom.Xform.Define(stage, Sdf.Path("/World")).GetPrim()
@@ -887,7 +943,11 @@ class Extension(omni.ext.IExt):
         if not group_prim or not group_prim.IsValid():
             group_prim = UsdGeom.Xform.Define(stage, group_path).GetPrim()
 
-        body_path = group_path.AppendChild("body")
+        if inner_xform_name == "body":
+            body_path = group_path.AppendChild("body")
+        else:
+            body_path = self._make_unique_child_path(stage, group_path, inner_xform_name)
+
         body_prim = stage.GetPrimAtPath(body_path)
         if body_prim and body_prim.IsValid() and not body_prim.IsA(UsdGeom.Xform):
             self._set_status(f"{body_path} already exists but is not an Xform.")
